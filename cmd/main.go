@@ -25,6 +25,7 @@ type config struct {
 	pgURI        string
 	reportPeriod time.Duration
 	ewma         *ewma.Rate
+	unlogged     bool
 }
 
 func main() {
@@ -36,6 +37,7 @@ func main() {
 	fs.IntVar(&config.batches, "batches", 10000, "Number of items in a batch")
 	fs.DurationVar(&config.reportPeriod, "reporting period", time.Second*10, "report period")
 	fs.StringVar(&config.pgURI, "pg-uri", "postgres://localhost/test", "Postgres URI")
+	fs.BoolVar(&config.unlogged, "unlogged", false, "disable logging for indices")
 
 	ff.Parse(fs, os.Args[1:])
 	config.ewma = ewma.NewEWMARate(1, config.reportPeriod)
@@ -106,14 +108,14 @@ func run(config config) {
 		execSql(pool, fmt.Sprintf("DROP TABLE IF EXISTS metric_%d", i))
 		execSql(pool, fmt.Sprintf("CREATE TABLE IF NOT EXISTS metric_%d(time timestamptz NOT NULL, value double precision not null, series_id bigint not null) WITH (autovacuum_vacuum_threshold = 50000, autovacuum_analyze_threshold = 50000)", i))
 		execSql(pool, fmt.Sprintf("TRUNCATE metric_%d", i))
-		execSql(pool, fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS metric_%d_idx ON metric_%d (series_id, time) INCLUDE (value)", i, i))
-		//execSql(pool, fmt.Sprintf("CREATE INDEX IF NOT EXISTS metric_%d_idx ON metric_%d (series_id) INCLUDE (time, value)", i, i))
-		execSql(pool, fmt.Sprintf("SELECT create_hypertable('metric_%d', 'time', chunk_time_interval=> (interval '1 minute' * (1.0+((random()*0.01)-0.005))), create_default_indexes=>false);", i))
+		execSql(pool, fmt.Sprintf("SET timescaledb.unlogged TO %v; CREATE UNIQUE INDEX IF NOT EXISTS metric_%d_idx ON metric_%d (series_id, time) INCLUDE (value)", config.unlogged, i, i))
+		//execSql(pool, fmt.Sprintf("SET timescaledb.unlogged TO %v; CREATE INDEX IF NOT EXISTS metric_%d_idx ON metric_%d (series_id) INCLUDE (time, value)", config.unlogged, i, i))
+		execSql(pool, fmt.Sprintf("SET timescaledb.unlogged TO %v; SELECT create_hypertable('metric_%d', 'time', chunk_time_interval=> (interval '1 minute' * (1.0+((random()*0.01)-0.005))), create_default_indexes=>false);", config.unlogged, i))
 
 		wg.Add(1)
 		go func() {
-			//runInserterCopy(config, pool, metric)
-			runInserter(config, pool, metric)
+			runInserterCopy(config, pool, metric)
+			//runInserter(config, pool, metric)
 			wg.Done()
 		}()
 	}
